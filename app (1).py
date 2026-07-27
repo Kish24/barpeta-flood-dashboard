@@ -1,75 +1,44 @@
 import streamlit as st
 import folium
-from streamlit_folium import st_folium
+from streamlit_folium import folium_static
 import geopandas as gpd
 import pandas as pd
-import numpy as np
-from shapely.geometry import box
 
 st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
 
 st.title("Barpeta District Flood Risk & Relief Dashboard")
 st.caption("Pilot Decision-Support Tool | GIS-Based Flood Early Warning & Relief Planning, Assam")
 
-# 1. ALWAYS GENERATE WGS84 GRID DIRECTLY IN MEMORY
+# 1. Load Validated Stage 3 GeoJSON Output
 @st.cache_data
-def load_barpeta_grid():
-    crs_utm = "EPSG:32646"
-    xmin, ymin, xmax, ymax = 280000, 2900000, 340000, 296000
-    grid_size = 5000
-    cols = np.arange(xmin, xmax, grid_size)
-    rows = np.arange(ymin, ymax, grid_size)
-    
-    polygons, sector_names = [], []
-    col_labels = [chr(i) for i in range(65, 65 + len(cols))]
-    for i, x in enumerate(cols):
-        for j, y in enumerate(rows):
-            polygons.append(box(x, y, x + grid_size, y + grid_size))
-            sector_names.append(f"Sector_{col_labels[i]}{j+1}")
-            
-    grid_gdf = gpd.GeoDataFrame({'sector_id': sector_names, 'geometry': polygons}, crs=crs_utm)
-    
-    np.random.seed(101)
-    grid_gdf['mean_priority'] = np.random.uniform(0.20, 0.36, size=len(grid_gdf))
-    
-    sar_pixel_map = {
-        'Sector_L5': 1370, 'Sector_M5': 1183, 'Sector_M6': 1134, 
-        'Sector_L6': 925, 'Sector_M7': 345, 'Sector_L4': 139, 
-        'Sector_M11': 72, 'Sector_L7': 55
-    }
-    grid_gdf['active_sar_pixels'] = grid_gdf['sector_id'].map(sar_pixel_map).fillna(0).astype(int)
-    
-    grid_gdf_wgs84 = grid_gdf.to_crs("EPSG:4326")
-    grid_gdf_wgs84['tier'] = np.where(
-        (grid_gdf_wgs84['active_sar_pixels'] > 0) | (grid_gdf_wgs84['mean_priority'] >= 0.30), 1, 2
-    )
-    return grid_gdf_wgs84
+def load_data():
+    return gpd.read_file('barpeta_operational_sectors.geojson')
 
-sectors = load_barpeta_grid()
+sectors = load_data()
 
+# Filter Tier 1 Deployment Sectors
 tier1 = sectors[sectors['tier'] == 1].sort_values('mean_priority', ascending=False)
 
-# Color Mapper Function (Pure Python - No extra libraries required)
 def get_color(priority):
-    if priority >= 0.32:
-        return '#bd0026' # Deep Red
-    elif priority >= 0.28:
-        return '#f03b20' # Bright Red
-    elif priority >= 0.24:
-        return '#fd8d3c' # Orange
+    if priority >= 2.50:
+        return '#bd0026' # Deep Red (Critical Deployment)
+    elif priority >= 2.00:
+        return '#f03b20' # High Priority
+    elif priority >= 1.50:
+        return '#fd8d3c' # Moderate Priority
     else:
-        return '#fecc5c' # Yellow
+        return '#fecc5c' # Baseline / Low Priority
 
 def style_function(feature):
     priority = feature['properties']['mean_priority']
     return {
         'fillColor': get_color(priority),
-        'color': '#333333',
-        'weight': 1,
+        'color': '#222222',
+        'weight': 0.8,
         'fillOpacity': 0.65
     }
 
-# --- UI LAYOUT ---
+# --- DASHBOARD LAYOUT ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -77,43 +46,39 @@ with col1:
     
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
-    # Use direct JSON dict interface to ensure keys exist cleanly for Folium
-    geojson_data = sectors.__geo_interface__
-
     folium.GeoJson(
-        geojson_data,
-        style_function=style_function,
-        tooltip=folium.GeoJsonTooltip(
-            fields=['sector_id', 'mean_priority', 'active_sar_pixels'],
-            aliases=['Sector:', 'Priority Score:', 'SAR Flood Pixels:']
-        )
+        sectors.__geo_interface__,
+        style_function=style_function
     ).add_to(m)
     
-    st_folium(m, width=800, height=550)
+    folium_static(m, width=800, height=550)
 
 with col2:
     st.subheader("📋 Priority Sectors")
-    st.write("**🚨 Tier 1 Immediate Deployment**")
+    st.write(f"**🚨 Tier 1 Deployment Sectors ({len(tier1)} Total)**")
+    
     st.dataframe(
         tier1[['sector_id', 'mean_priority', 'active_sar_pixels']],
         column_config={
-            "sector_id": "Sector",
+            "sector_id": "Sector ID",
             "mean_priority": st.column_config.NumberColumn("Priority Score", format="%.3f"),
             "active_sar_pixels": "SAR Flood Pixels"
         },
-        hide_index=True
+        hide_index=True,
+        height=400
     )
     
     st.markdown("---")
     st.write("**💡 Operational Guidance**")
     st.info(
-        "• **Red/Tier 1 Sectors:** Active flooding detected alongside high population exposure. Immediate rescue boat and medical deployment required.\n\n"
-        "• **Orange Sectors:** High structural risk and isolation. Monitor closely for rising water levels."
+        "• **Red/Tier 1 Sectors:** Active flooding detected alongside high vulnerability. Immediate rescue boat and relief distribution required.\n\n"
+        "• **Orange Sectors:** High structural risk/isolation. Monitor water levels closely."
     )
 
 st.markdown("---")
 st.caption(
     "Susceptibility Model: Random Forest, validated AUC 0.76 (Stage 1) | "
     "Flood Detection: Sentinel-1 SAR, Last Pass: July 15, 2026 (Stage 2) | "
-    "This is a pilot research tool for Barpeta District, not an official government alert system."
+    "Data derived directly from Stage 3 barpeta_integrated_flood_risk_final.tif | "
+    "Pilot research tool for Barpeta District, Assam."
 )
