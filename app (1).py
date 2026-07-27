@@ -77,13 +77,15 @@ with col1:
     
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
+    # Use direct JSON dict interface to ensure keys exist cleanly for Folium
+    geojson_data = sectors.__geo_interface__
+
     folium.GeoJson(
-        sectors,
+        geojson_data,
         style_function=style_function,
         tooltip=folium.GeoJsonTooltip(
             fields=['sector_id', 'mean_priority', 'active_sar_pixels'],
-            aliases=['Sector:', 'Priority Score:', 'SAR Flood Pixels:'],
-            localize=True
+            aliases=['Sector:', 'Priority Score:', 'SAR Flood Pixels:']
         )
     ).add_to(m)
     
