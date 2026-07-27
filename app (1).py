@@ -5,8 +5,6 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 from shapely.geometry import box
-import matplotlib.cm as cm
-import matplotlib.colors as colors
 
 st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
 
@@ -16,7 +14,6 @@ st.caption("Pilot Decision-Support Tool | GIS-Based Flood Early Warning & Relief
 # 1. ALWAYS GENERATE WGS84 GRID DIRECTLY IN MEMORY
 @st.cache_data
 def load_barpeta_grid():
-    # Define UTM Grid for Barpeta Region
     crs_utm = "EPSG:32646"
     xmin, ymin, xmax, ymax = 280000, 2900000, 340000, 296000
     grid_size = 5000
@@ -32,7 +29,6 @@ def load_barpeta_grid():
             
     grid_gdf = gpd.GeoDataFrame({'sector_id': sector_names, 'geometry': polygons}, crs=crs_utm)
     
-    # Priority and SAR Flood Data
     np.random.seed(101)
     grid_gdf['mean_priority'] = np.random.uniform(0.20, 0.36, size=len(grid_gdf))
     
@@ -43,28 +39,31 @@ def load_barpeta_grid():
     }
     grid_gdf['active_sar_pixels'] = grid_gdf['sector_id'].map(sar_pixel_map).fillna(0).astype(int)
     
-    # Convert directly to standard Web GPS Lat/Lon (EPSG:4326)
     grid_gdf_wgs84 = grid_gdf.to_crs("EPSG:4326")
     grid_gdf_wgs84['tier'] = np.where(
         (grid_gdf_wgs84['active_sar_pixels'] > 0) | (grid_gdf_wgs84['mean_priority'] >= 0.30), 1, 2
     )
     return grid_gdf_wgs84
 
-# Load grid
 sectors = load_barpeta_grid()
 
-# Tier 1 Priority Table
 tier1 = sectors[sectors['tier'] == 1].sort_values('mean_priority', ascending=False)
 
-# Color scale function (Yellow -> Orange -> Red)
-colormap = cm.get_cmap('YlOrRd')
-norm = colors.Normalize(vmin=sectors['mean_priority'].min(), vmax=sectors['mean_priority'].max())
+# Color Mapper Function (Pure Python - No extra libraries required)
+def get_color(priority):
+    if priority >= 0.32:
+        return '#bd0026' # Deep Red
+    elif priority >= 0.28:
+        return '#f03b20' # Bright Red
+    elif priority >= 0.24:
+        return '#fd8d3c' # Orange
+    else:
+        return '#fecc5c' # Yellow
 
 def style_function(feature):
     priority = feature['properties']['mean_priority']
-    color_hex = colors.to_hex(colormap(norm(priority)))
     return {
-        'fillColor': color_hex,
+        'fillColor': get_color(priority),
         'color': '#333333',
         'weight': 1,
         'fillOpacity': 0.65
@@ -76,10 +75,8 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("🗺️ Sector Priority Map & Active Inundation")
     
-    # Base Map centered over Barpeta District
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
-    # Add Folium GeoJson layer directly with popups & hover tooltips
     folium.GeoJson(
         sectors,
         style_function=style_function,
