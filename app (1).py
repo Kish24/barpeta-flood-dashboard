@@ -5,13 +5,15 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 from shapely.geometry import box
+import matplotlib.cm as cm
+import matplotlib.colors as colors
 
 st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
 
 st.title("Barpeta District Flood Risk & Relief Dashboard")
 st.caption("Pilot Decision-Support Tool | GIS-Based Flood Early Warning & Relief Planning, Assam")
 
-# --- ALWAYS GENERATE WGS84 GRID DIRECTLY IN MEMORY ---
+# 1. ALWAYS GENERATE WGS84 GRID DIRECTLY IN MEMORY
 @st.cache_data
 def load_barpeta_grid():
     # Define UTM Grid for Barpeta Region
@@ -54,6 +56,20 @@ sectors = load_barpeta_grid()
 # Tier 1 Priority Table
 tier1 = sectors[sectors['tier'] == 1].sort_values('mean_priority', ascending=False)
 
+# Color scale function (Yellow -> Orange -> Red)
+colormap = cm.get_cmap('YlOrRd')
+norm = colors.Normalize(vmin=sectors['mean_priority'].min(), vmax=sectors['mean_priority'].max())
+
+def style_function(feature):
+    priority = feature['properties']['mean_priority']
+    color_hex = colors.to_hex(colormap(norm(priority)))
+    return {
+        'fillColor': color_hex,
+        'color': '#333333',
+        'weight': 1,
+        'fillOpacity': 0.65
+    }
+
 # --- UI LAYOUT ---
 col1, col2 = st.columns([2, 1])
 
@@ -63,20 +79,15 @@ with col1:
     # Base Map centered over Barpeta District
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
-    choropleth_data = pd.DataFrame({
-        'sector_id': sectors['sector_id'].astype(str),
-        'mean_priority': sectors['mean_priority'].astype(float)
-    })
-
-    folium.Choropleth(
-        geo_data=sectors.__geo_interface__,
-        data=choropleth_data,
-        columns=['sector_id', 'mean_priority'],
-        key_on='feature.properties.sector_id',
-        fill_color='YlOrRd',
-        fill_opacity=0.65,
-        line_opacity=0.8,
-        legend_name="Relief Priority Score (0.0 - 1.0)"
+    # Add Folium GeoJson layer directly with popups & hover tooltips
+    folium.GeoJson(
+        sectors,
+        style_function=style_function,
+        tooltip=folium.GeoJsonTooltip(
+            fields=['sector_id', 'mean_priority', 'active_sar_pixels'],
+            aliases=['Sector:', 'Priority Score:', 'SAR Flood Pixels:'],
+            localize=True
+        )
     ).add_to(m)
     
     st_folium(m, width=800, height=550)
