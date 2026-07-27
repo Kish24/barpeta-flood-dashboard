@@ -4,7 +4,6 @@ from streamlit_folium import st_folium
 import geopandas as gpd
 import pandas as pd
 import numpy as np
-import os
 from shapely.geometry import box
 
 st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
@@ -12,65 +11,56 @@ st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
 st.title("Barpeta District Flood Risk & Relief Dashboard")
 st.caption("Pilot Decision-Support Tool | GIS-Based Flood Early Warning & Relief Planning, Assam")
 
-# Function to build fallback grid if needed
-def create_default_grid():
-    crs = "EPSG:32646"
+# --- ALWAYS GENERATE WGS84 GRID DIRECTLY IN MEMORY ---
+@st.cache_data
+def load_barpeta_grid():
+    # Define UTM Grid for Barpeta Region
+    crs_utm = "EPSG:32646"
     xmin, ymin, xmax, ymax = 280000, 2900000, 340000, 296000
     grid_size = 5000
     cols = np.arange(xmin, xmax, grid_size)
     rows = np.arange(ymin, ymax, grid_size)
+    
     polygons, sector_names = [], []
     col_labels = [chr(i) for i in range(65, 65 + len(cols))]
     for i, x in enumerate(cols):
         for j, y in enumerate(rows):
             polygons.append(box(x, y, x + grid_size, y + grid_size))
             sector_names.append(f"Sector_{col_labels[i]}{j+1}")
-    grid_gdf = gpd.GeoDataFrame({'sector_id': sector_names, 'geometry': polygons}, crs=crs)
+            
+    grid_gdf = gpd.GeoDataFrame({'sector_id': sector_names, 'geometry': polygons}, crs=crs_utm)
+    
+    # Priority and SAR Flood Data
     np.random.seed(101)
     grid_gdf['mean_priority'] = np.random.uniform(0.20, 0.36, size=len(grid_gdf))
-    sar_pixel_map = {'Sector_L5': 1370, 'Sector_M5': 1183, 'Sector_M6': 1134, 'Sector_L6': 925, 'Sector_M7': 345, 'Sector_L4': 139, 'Sector_M11': 72, 'Sector_L7': 55}
+    
+    sar_pixel_map = {
+        'Sector_L5': 1370, 'Sector_M5': 1183, 'Sector_M6': 1134, 
+        'Sector_L6': 925, 'Sector_M7': 345, 'Sector_L4': 139, 
+        'Sector_M11': 72, 'Sector_L7': 55
+    }
     grid_gdf['active_sar_pixels'] = grid_gdf['sector_id'].map(sar_pixel_map).fillna(0).astype(int)
+    
+    # Convert directly to standard Web GPS Lat/Lon (EPSG:4326)
     grid_gdf_wgs84 = grid_gdf.to_crs("EPSG:4326")
-    grid_gdf_wgs84['tier'] = np.where((grid_gdf_wgs84['active_sar_pixels'] > 0) | (grid_gdf_wgs84['mean_priority'] >= 0.30), 1, 2)
+    grid_gdf_wgs84['tier'] = np.where(
+        (grid_gdf_wgs84['active_sar_pixels'] > 0) | (grid_gdf_wgs84['mean_priority'] >= 0.30), 1, 2
+    )
     return grid_gdf_wgs84
 
-# 1. Load or Generate GeoJSON
-if os.path.exists('barpeta_sectors_web.geojson'):
-    try:
-        sectors = gpd.read_file('barpeta_sectors_web.geojson')
-        # Ensure conversion to WGS84 (Lat/Lon)
-        if sectors.crs is not None and sectors.crs != "EPSG:4326":
-            sectors = sectors.to_crs("EPSG:4326")
-        elif sectors.geometry.iloc[0].bounds[0] > 180: # Check if metric bounds exist without CRS header
-            sectors = sectors.set_crs("EPSG:32646", allow_override=True).to_crs("EPSG:4326")
-    except Exception:
-        sectors = create_default_grid()
-else:
-    sectors = create_default_grid()
+# Load grid
+sectors = load_barpeta_grid()
 
-# 2. Standardize columns defensively
-if 'sector_id' not in sectors.columns:
-    sectors['sector_id'] = [f"Sector_{i+1}" for i in range(len(sectors))]
-
-if 'mean_priority' not in sectors.columns:
-    sectors['mean_priority'] = np.random.uniform(0.20, 0.35, size=len(sectors))
-
-if 'active_sar_pixels' not in sectors.columns:
-    sectors['active_sar_pixels'] = 0
-
-if 'tier' not in sectors.columns:
-    sectors['tier'] = np.where((sectors['active_sar_pixels'] > 0) | (sectors['mean_priority'] >= 0.28), 1, 2)
-
-# Ensure Tier 1 priority list is populated
+# Tier 1 Priority Table
 tier1 = sectors[sectors['tier'] == 1].sort_values('mean_priority', ascending=False)
-if len(tier1) == 0:
-    tier1 = sectors.sort_values('mean_priority', ascending=False).head(8)
 
-# 3. Build UI
+# --- UI LAYOUT ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("🗺️ Sector Priority Map & Active Inundation")
+    
+    # Base Map centered over Barpeta District
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
     choropleth_data = pd.DataFrame({
