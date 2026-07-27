@@ -12,8 +12,8 @@ st.set_page_config(page_title="Barpeta Flood Relief Dashboard", layout="wide")
 st.title("Barpeta District Flood Risk & Relief Dashboard")
 st.caption("Pilot Decision-Support Tool | GIS-Based Flood Early Warning & Relief Planning, Assam")
 
-# 1. Self-Healing GeoJSON Generator if missing
-if not os.path.exists('barpeta_sectors_web.geojson'):
+# Function to build fallback grid if needed
+def create_default_grid():
     crs = "EPSG:32646"
     xmin, ymin, xmax, ymax = 280000, 2900000, 340000, 296000
     grid_size = 5000
@@ -32,13 +32,23 @@ if not os.path.exists('barpeta_sectors_web.geojson'):
     grid_gdf['active_sar_pixels'] = grid_gdf['sector_id'].map(sar_pixel_map).fillna(0).astype(int)
     grid_gdf_wgs84 = grid_gdf.to_crs("EPSG:4326")
     grid_gdf_wgs84['tier'] = np.where((grid_gdf_wgs84['active_sar_pixels'] > 0) | (grid_gdf_wgs84['mean_priority'] >= 0.30), 1, 2)
-    grid_gdf_wgs84['geometry'] = grid_gdf_wgs84.geometry.simplify(0.0005)
-    grid_gdf_wgs84[['sector_id', 'tier', 'mean_priority', 'active_sar_pixels', 'geometry']].to_file('barpeta_sectors_web.geojson', driver='GeoJSON')
+    return grid_gdf_wgs84
 
-# 2. Load GeoJSON
-sectors = gpd.read_file('barpeta_sectors_web.geojson')
+# 1. Load or Generate GeoJSON
+if os.path.exists('barpeta_sectors_web.geojson'):
+    try:
+        sectors = gpd.read_file('barpeta_sectors_web.geojson')
+        # Ensure conversion to WGS84 (Lat/Lon)
+        if sectors.crs is not None and sectors.crs != "EPSG:4326":
+            sectors = sectors.to_crs("EPSG:4326")
+        elif sectors.geometry.iloc[0].bounds[0] > 180: # Check if metric bounds exist without CRS header
+            sectors = sectors.set_crs("EPSG:32646", allow_override=True).to_crs("EPSG:4326")
+    except Exception:
+        sectors = create_default_grid()
+else:
+    sectors = create_default_grid()
 
-# Standardize column names defensively
+# 2. Standardize columns defensively
 if 'sector_id' not in sectors.columns:
     sectors['sector_id'] = [f"Sector_{i+1}" for i in range(len(sectors))]
 
@@ -51,21 +61,18 @@ if 'active_sar_pixels' not in sectors.columns:
 if 'tier' not in sectors.columns:
     sectors['tier'] = np.where((sectors['active_sar_pixels'] > 0) | (sectors['mean_priority'] >= 0.28), 1, 2)
 
-# Ensure Tier 1 non-empty fallback
+# Ensure Tier 1 priority list is populated
 tier1 = sectors[sectors['tier'] == 1].sort_values('mean_priority', ascending=False)
 if len(tier1) == 0:
     tier1 = sectors.sort_values('mean_priority', ascending=False).head(8)
 
-# 3. Create Map centered over Barpeta District
+# 3. Build UI
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("🗺️ Sector Priority Map & Active Inundation")
-    
-    # Position map view right over Barpeta
     m = folium.Map(location=[26.32, 90.98], zoom_start=11, tiles='CartoDB positron')
     
-    # Prepare non-spatial pandas DataFrame for Choropleth
     choropleth_data = pd.DataFrame({
         'sector_id': sectors['sector_id'].astype(str),
         'mean_priority': sectors['mean_priority'].astype(float)
@@ -77,7 +84,7 @@ with col1:
         columns=['sector_id', 'mean_priority'],
         key_on='feature.properties.sector_id',
         fill_color='YlOrRd',
-        fill_opacity=0.6,
+        fill_opacity=0.65,
         line_opacity=0.8,
         legend_name="Relief Priority Score (0.0 - 1.0)"
     ).add_to(m)
@@ -87,7 +94,6 @@ with col1:
 with col2:
     st.subheader("📋 Priority Sectors")
     st.write("**🚨 Tier 1 Immediate Deployment**")
-    
     st.dataframe(
         tier1[['sector_id', 'mean_priority', 'active_sar_pixels']],
         column_config={
